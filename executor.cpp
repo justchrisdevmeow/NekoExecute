@@ -26,37 +26,31 @@ uintptr_t GetLuaState() {
 }
 
 bool ExecuteScript(const std::string& script) {
-    __try {
-        luaState = GetLuaState();
-        if (!luaState) {
-            Log("Lua state is null");
-            return false;
-        }
-        
-        typedef uintptr_t(__cdecl* luau_load_t)(uintptr_t, const char*, const char*, size_t, int);
-        typedef int(__cdecl* lua_pcall_t)(uintptr_t, int, int, int);
-        
-        luau_load_t luau_load = (luau_load_t)(baseAddr + Offsets::luau_load);
-        lua_pcall_t lua_pcall = (lua_pcall_t)(baseAddr + Offsets::lua_pcall);
-        
-        if (!luau_load || !lua_pcall) {
-            Log("Function pointers invalid");
-            return false;
-        }
-        
-        std::string wrapped = "spawn(function()\n" + script + "\nend)";
-        int loadRes = luau_load(luaState, "@NekoExecute", wrapped.c_str(), wrapped.size(), 0);
-        
-        if (loadRes == 0) {
-            int pcallRes = lua_pcall(luaState, 0, 0, 0);
-            return (pcallRes == 0);
-        }
+    luaState = GetLuaState();
+    if (!luaState) {
+        Log("Lua state is null");
         return false;
     }
-    __except(EXCEPTION_EXECUTE_HANDLER) {
-        Log("Exception in ExecuteScript");
+    
+    typedef uintptr_t(__cdecl* luau_load_t)(uintptr_t, const char*, const char*, size_t, int);
+    typedef int(__cdecl* lua_pcall_t)(uintptr_t, int, int, int);
+    
+    luau_load_t luau_load = (luau_load_t)(baseAddr + Offsets::luau_load);
+    lua_pcall_t lua_pcall = (lua_pcall_t)(baseAddr + Offsets::lua_pcall);
+    
+    if (!luau_load || !lua_pcall) {
+        Log("Function pointers invalid");
         return false;
     }
+    
+    std::string wrapped = "spawn(function()\n" + script + "\nend)";
+    int loadRes = luau_load(luaState, "@NekoExecute", wrapped.c_str(), wrapped.size(), 0);
+    
+    if (loadRes == 0) {
+        int pcallRes = lua_pcall(luaState, 0, 0, 0);
+        return (pcallRes == 0);
+    }
+    return false;
 }
 
 void PipeServer() {
