@@ -8,4 +8,3 @@ target_link_libraries(NekoInjector PRIVATE ntdll)
 
 add_library(NekoExecute SHARED executor.cpp)
 target_link_libraries(NekoExecute PRIVATE user32)
-set_target_properties(NekoExecute PROPERTIES LINK_FLAGS "/SUBSYSTEM:WINDOWS")
