@@ -1,179 +1,229 @@
 #include <windows.h>
-#include <d3d9.h>
-#include <imgui.h>
-#include <imgui_impl_dx9.h>
-#include <imgui_impl_win32.h>
 #include <string>
+#include <fstream>
+#include <ctime>
 #include "offsets.h"
 
-#pragma comment(lib, "d3d9.lib")
-
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+#pragma comment(lib, "user32.lib")
 
 bool showMenu = true;
 char scriptBuffer[65536] = {0};
 HWND overlayWindow = NULL;
-LPDIRECT3DDEVICE9 device = NULL;
-LPDIRECT3D9 d3d = NULL;
+HWND editControl = NULL;
+
+// Debug logging
+void LogDebug(const char* message) {
+    char logPath[MAX_PATH];
+    GetCurrentDirectoryA(MAX_PATH, logPath);
+    strcat_s(logPath, "\\neko_debug.log");
+    
+    std::ofstream log(logPath, std::ios::app);
+    time_t now = time(nullptr);
+    log << ctime(&now) << " - " << message << std::endl;
+    log.close();
+}
 
 typedef uintptr_t(__cdecl* luau_load_t)(uintptr_t, const char*, const char*, size_t, int);
 typedef int(__cdecl* lua_pcall_t)(uintptr_t, int, int, int);
 
 uintptr_t GetLuaState() {
+    LogDebug("Getting Lua state...");
     uintptr_t base = (uintptr_t)GetModuleHandleA(NULL);
-    return *(uintptr_t*)(base + Offsets::LuaState);
+    if (!base) {
+        LogDebug("Failed to get module base!");
+        return 0;
+    }
+    uintptr_t state = *(uintptr_t*)(base + Offsets::LuaState);
+    LogDebug(("Lua state: 0x" + std::to_string(state)).c_str());
+    return state;
 }
 
 void ExecuteLua(const std::string& script) {
+    LogDebug("Executing Lua script...");
+    LogDebug(("Script length: " + std::to_string(script.length())).c_str());
+    
     uintptr_t L = GetLuaState();
-    if (!L) return;
+    if (!L) {
+        LogDebug("Lua state is NULL!");
+        MessageBoxA(overlayWindow, "Failed to get Lua state!", "Error", MB_OK);
+        return;
+    }
 
     uintptr_t base = (uintptr_t)GetModuleHandleA(NULL);
     luau_load_t luau_load = (luau_load_t)(base + Offsets::luau_load);
     lua_pcall_t lua_pcall = (lua_pcall_t)(base + Offsets::lua_pcall);
 
     std::string wrapped = "spawn(function()\n" + script + "\nend)";
+    LogDebug(("Wrapped script: " + wrapped.substr(0, 100)).c_str());
 
     int load = luau_load(L, "@NekoExecute", wrapped.c_str(), wrapped.size(), 0);
+    LogDebug(("luau_load result: " + std::to_string(load)).c_str());
+    
     if (load == 0) {
-        lua_pcall(L, 0, 0, 0);
+        int pcallResult = lua_pcall(L, 0, 0, 0);
+        LogDebug(("lua_pcall result: " + std::to_string(pcallResult)).c_str());
+        if (pcallResult == 0) {
+            MessageBoxA(overlayWindow, "Script executed successfully!", "Success", MB_OK);
+        } else {
+            MessageBoxA(overlayWindow, "Script execution failed!", "Error", MB_OK);
+        }
+    } else {
+        MessageBoxA(overlayWindow, "luau_load failed! Check script syntax.", "Error", MB_OK);
     }
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
-        return true;
-    
     switch (msg) {
         case WM_DESTROY:
+            LogDebug("Window destroyed");
             PostQuitMessage(0);
             return 0;
+        case WM_COMMAND:
+            if (LOWORD(wParam) == 1) { // Execute button
+                LogDebug("Execute button clicked");
+                GetWindowTextA(editControl, scriptBuffer, sizeof(scriptBuffer));
+                if (strlen(scriptBuffer) > 0) {
+                    ExecuteLua(std::string(scriptBuffer));
+                } else {
+                    MessageBoxA(hWnd, "Please enter a script!", "Error", MB_OK);
+                }
+            }
+            else if (LOWORD(wParam) == 2) { // Clear button
+                LogDebug("Clear button clicked");
+                memset(scriptBuffer, 0, sizeof(scriptBuffer));
+                SetWindowTextA(editControl, "");
+            }
+            return 0;
+        case WM_SIZE:
+            // Resize edit control when window resizes
+            if (editControl) {
+                RECT rc;
+                GetClientRect(hWnd, &rc);
+                SetWindowPos(editControl, NULL, 10, 35, rc.right - 20, rc.bottom - 100, SWP_NOZORDER);
+            }
+            break;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
-void Render() {
-    // Clear the device
-    device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
+DWORD WINAPI MainThread(LPVOID) {
+    // Log start
+    LogDebug("=== NekoExecute DLL Loaded ===");
     
-    if (showMenu) {
-        ImGui_ImplDX9_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
-
-        ImGui::Begin("NekoExecute", &showMenu, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
-        ImGui::InputTextMultiline("##script", scriptBuffer, IM_ARRAYSIZE(scriptBuffer), ImVec2(780, 500));
-        
-        if (ImGui::Button("EXECUTE", ImVec2(150, 40))) {
-            ExecuteLua(std::string(scriptBuffer));
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("CLEAR", ImVec2(120, 40))) {
-            memset(scriptBuffer, 0, sizeof(scriptBuffer));
-        }
-
-        ImGui::End();
-
-        ImGui::EndFrame();
-        ImGui::Render();
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-    }
+    // Show injection confirmation
+    MessageBoxA(NULL, "NekoExecute injected successfully!\nCheck neko_debug.log for details.", "Injection Confirmation", MB_OK | MB_ICONINFORMATION);
+    LogDebug("Injection confirmed by user");
     
-    // Present the frame
-    device->Present(NULL, NULL, NULL, NULL);
-}
-
-// Create an overlay window
-HWND CreateOverlayWindow() {
-    WNDCLASSEX wc = {};
-    wc.cbSize = sizeof(WNDCLASSEX);
+    // Register window class
+    WNDCLASSEXA wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXA);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProc;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.lpszClassName = "NekoExecuteOverlay";
-    RegisterClassEx(&wc);
-
-    HWND hWnd = CreateWindowEx(
-        WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED,
-        "NekoExecuteOverlay",
-        "NekoExecute",
-        WS_POPUP,
-        0, 0, 800, 600,
-        NULL, NULL, wc.hInstance, NULL
-    );
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.hCursor = LoadCursorA(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = "NekoExecuteClass";
     
-    SetLayeredWindowAttributes(hWnd, 0, 0, LWA_ALPHA);
-    ShowWindow(hWnd, SW_SHOW);
-    UpdateWindow(hWnd);
-    
-    return hWnd;
-}
-
-DWORD WINAPI MainThread(LPVOID) {
-    // Create our own visible window
-    overlayWindow = CreateOverlayWindow();
-    if (!overlayWindow) return 1;
-
-    // Initialize D3D9
-    d3d = Direct3DCreate9(D3D_SDK_VERSION);
-    
-    D3DPRESENT_PARAMETERS pp = {};
-    pp.Windowed = TRUE;
-    pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    pp.hDeviceWindow = overlayWindow;
-    pp.BackBufferFormat = D3DFMT_UNKNOWN;
-    pp.BackBufferCount = 1;
-    pp.BackBufferWidth = 800;
-    pp.BackBufferHeight = 600;
-    pp.EnableAutoDepthStencil = FALSE;
-    
-    if (FAILED(d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, overlayWindow,
-                                  D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &device))) {
+    if (!RegisterClassExA(&wc)) {
+        DWORD error = GetLastError();
+        LogDebug(("Failed to register window class! Error: " + std::to_string(error)).c_str());
+        MessageBoxA(NULL, "Failed to register window class!", "Error", MB_OK);
         return 1;
     }
+    LogDebug("Window class registered");
 
-    // Initialize ImGui
-    ImGui::CreateContext();
-    ImGui_ImplWin32_Init(overlayWindow);
-    ImGui_ImplDX9_Init(device);
+    // Create window
+    overlayWindow = CreateWindowExA(
+        0,
+        "NekoExecuteClass",
+        "NekoExecute - Roblox Executor",
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_SIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        850, 650,
+        NULL, NULL, wc.hInstance, NULL
+    );
+
+    if (!overlayWindow) {
+        DWORD error = GetLastError();
+        LogDebug(("Failed to create window! Error: " + std::to_string(error)).c_str());
+        MessageBoxA(NULL, "Failed to create window!", "Error", MB_OK);
+        return 1;
+    }
+    LogDebug("Window created successfully");
+
+    // Create UI controls
+    CreateWindowExA(0, "STATIC", "Script Editor:", WS_CHILD | WS_VISIBLE,
+                    10, 10, 100, 20, overlayWindow, NULL, wc.hInstance, NULL);
     
-    // Style
-    ImGui::StyleColorsDark();
+    editControl = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "", 
+                                  WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL,
+                                  10, 35, 810, 500, overlayWindow, (HMENU)3, wc.hInstance, NULL);
+    
+    CreateWindowExA(0, "BUTTON", "EXECUTE", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                    10, 550, 120, 40, overlayWindow, (HMENU)1, wc.hInstance, NULL);
+    
+    CreateWindowExA(0, "BUTTON", "CLEAR", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                    140, 550, 100, 40, overlayWindow, (HMENU)2, wc.hInstance, NULL);
+    
+    CreateWindowExA(0, "BUTTON", "TEST (print)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                    250, 550, 120, 40, overlayWindow, (HMENU)4, wc.hInstance, NULL);
+    
+    // Status text
+    HWND statusText = CreateWindowExA(0, "STATIC", "Ready", WS_CHILD | WS_VISIBLE,
+                                      400, 560, 200, 20, overlayWindow, NULL, wc.hInstance, NULL);
+    
+    LogDebug("UI controls created");
 
+    // Show window
+    ShowWindow(overlayWindow, SW_SHOW);
+    UpdateWindow(overlayWindow);
+    SetFocus(editControl);
+    LogDebug("Window shown and focused");
+    
+    // Update status
+    SetWindowTextA(statusText, "Status: Ready - Press INSERT to toggle");
+    
     // Message loop
-    MSG msg = {0};
-    while (msg.message != WM_QUIT) {
-        if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
+    MSG msg;
+    bool running = true;
+    while (running && GetMessageA(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageA(&msg);
+        
+        // Handle button clicks via command messages
+        if (msg.message == WM_COMMAND && LOWORD(msg.wParam) == 4) {
+            LogDebug("Test button clicked");
+            const char* testScript = "print('NekoExecute is working!\\nMade by you')";
+            ExecuteLua(std::string(testScript));
+            SetWindowTextA(statusText, "Status: Test script executed");
         }
         
-        // Toggle menu with INSERT
+        // Toggle menu/show with INSERT
         if (GetAsyncKeyState(VK_INSERT) & 1) {
-            showMenu = !showMenu;
+            LogDebug("INSERT key pressed");
+            if (IsWindowVisible(overlayWindow)) {
+                ShowWindow(overlayWindow, SW_HIDE);
+                SetWindowTextA(statusText, "Status: Hidden (INSERT to show)");
+            } else {
+                ShowWindow(overlayWindow, SW_SHOW);
+                SetWindowTextA(statusText, "Status: Visible");
+            }
         }
-        
-        Render();
-        Sleep(10);
     }
     
-    // Cleanup
-    ImGui_ImplDX9_Shutdown();
-    ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
-    
-    if (device) device->Release();
-    if (d3d) d3d->Release();
-    if (overlayWindow) DestroyWindow(overlayWindow);
-    
+    LogDebug("=== NekoExecute Unloading ===");
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) {
-        DisableThreadLibraryCalls(hMod);
-        CreateThread(NULL, 0, MainThread, NULL, 0, NULL);
+    switch (reason) {
+        case DLL_PROCESS_ATTACH:
+            DisableThreadLibraryCalls(hMod);
+            CreateThread(NULL, 0, MainThread, NULL, 0, NULL);
+            break;
+        case DLL_PROCESS_DETACH:
+            LogDebug("DLL detaching");
+            break;
     }
     return TRUE;
 }
