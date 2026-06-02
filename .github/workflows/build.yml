@@ -1,4 +1,3 @@
-# .github/workflows/build.yml
 name: Build NekoExecute
 
 on:
@@ -32,3 +31,4 @@ jobs:
         path: |
           build/Release/*.dll
           build/Release/*.exe
+          build/Release/*.pdb
