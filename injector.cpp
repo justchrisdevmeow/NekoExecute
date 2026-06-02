@@ -1,140 +1,152 @@
 #include <windows.h>
 #include <iostream>
 #include <string>
-#include <TlHelp32.h>
+#include <vector>
 #include <fstream>
 #include <ctime>
+#include <TlHelp32.h>
 
-void LogInject(const char* message) {
-    std::ofstream log("injector_debug.log", std::ios::app);
-    time_t now = time(nullptr);
-    log << ctime(&now) << " - " << message << std::endl;
-    log.close();
+#pragma comment(lib, "ntdll.lib")
+
+typedef NTSTATUS(NTAPI* pNtCreateThreadEx)(
+    PHANDLE ThreadHandle,
+    ACCESS_MASK DesiredAccess,
+    PVOID ObjectAttributes,
+    HANDLE ProcessHandle,
+    PVOID StartRoutine,
+    PVOID Argument,
+    ULONG CreateFlags,
+    SIZE_T ZeroBits,
+    SIZE_T StackSize,
+    SIZE_T MaximumStackSize,
+    PVOID AttributeList
+);
+
+typedef NTSTATUS(NTAPI* pNtAllocateVirtualMemory)(
+    HANDLE ProcessHandle,
+    PVOID* BaseAddress,
+    ULONG_PTR ZeroBits,
+    PSIZE_T RegionSize,
+    ULONG AllocationType,
+    ULONG Protect
+);
+
+typedef NTSTATUS(NTAPI* pNtWriteVirtualMemory)(
+    HANDLE ProcessHandle,
+    PVOID BaseAddress,
+    PVOID Buffer,
+    SIZE_T NumberOfBytesToWrite,
+    PSIZE_T NumberOfBytesWritten
+);
+
+typedef NTSTATUS(NTAPI* pNtProtectVirtualMemory)(
+    HANDLE ProcessHandle,
+    PVOID* BaseAddress,
+    PSIZE_T NumberOfBytesToProtect,
+    ULONG NewAccessProtection,
+    PULONG OldAccessProtection
+);
+
+pNtCreateThreadEx NtCreateThreadEx = nullptr;
+pNtAllocateVirtualMemory NtAllocateVirtualMemory = nullptr;
+pNtWriteVirtualMemory NtWriteVirtualMemory = nullptr;
+pNtProtectVirtualMemory NtProtectVirtualMemory = nullptr;
+
+void InitSyscalls() {
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    NtCreateThreadEx = (pNtCreateThreadEx)GetProcAddress(ntdll, "NtCreateThreadEx");
+    NtAllocateVirtualMemory = (pNtAllocateVirtualMemory)GetProcAddress(ntdll, "NtAllocateVirtualMemory");
+    NtWriteVirtualMemory = (pNtWriteVirtualMemory)GetProcAddress(ntdll, "NtWriteVirtualMemory");
+    NtProtectVirtualMemory = (pNtProtectVirtualMemory)GetProcAddress(ntdll, "NtProtectVirtualMemory");
 }
 
-DWORD GetProcID(const char* procName) {
-    LogInject("Searching for process...");
-    PROCESSENTRY32 pe32 = { sizeof(PROCESSENTRY32) };
-    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnap == INVALID_HANDLE_VALUE) {
-        LogInject("Failed to create snapshot!");
-        return 0;
-    }
-    
-    if (Process32First(hSnap, &pe32)) {
+void Log(const char* msg) {
+    std::ofstream log("injector.log", std::ios::app);
+    time_t t = time(nullptr);
+    log << ctime(&t) << " " << msg << std::endl;
+}
+
+DWORD FindProcess(const char* name) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32 pe = { sizeof(PROCESSENTRY32) };
+    if (Process32First(snap, &pe)) {
         do {
-            if (!_stricmp(pe32.szExeFile, procName)) {
-                CloseHandle(hSnap);
-                LogInject(("Found process: " + std::string(procName) + " with PID: " + std::to_string(pe32.th32ProcessID)).c_str());
-                return pe32.th32ProcessID;
+            if (_stricmp(pe.szExeFile, name) == 0) {
+                CloseHandle(snap);
+                return pe.th32ProcessID;
             }
-        } while (Process32Next(hSnap, &pe32));
+        } while (Process32Next(snap, &pe));
     }
-    CloseHandle(hSnap);
-    LogInject(("Process not found: " + std::string(procName)).c_str());
+    CloseHandle(snap);
     return 0;
 }
 
-bool InjectDLL(DWORD pid, const char* dllPath) {
-    LogInject(("Attempting to inject into PID: " + std::to_string(pid)).c_str());
-    LogInject(("DLL Path: " + std::string(dllPath)).c_str());
-    
+bool ManualMap(DWORD pid, const std::vector<BYTE>& dllData) {
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (!hProc) {
-        LogInject("Failed to open process!");
-        return false;
-    }
-    LogInject("Process opened successfully");
-
-    SIZE_T pathLen = strlen(dllPath) + 1;
-    LPVOID alloc = VirtualAllocEx(hProc, NULL, pathLen, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!alloc) {
-        LogInject("Failed to allocate memory in target process!");
-        CloseHandle(hProc);
-        return false;
-    }
-    LogInject(("Memory allocated at: 0x" + std::to_string((uintptr_t)alloc)).c_str());
-
-    if (!WriteProcessMemory(hProc, alloc, dllPath, pathLen, NULL)) {
-        LogInject("Failed to write DLL path to process memory!");
-        VirtualFreeEx(hProc, alloc, 0, MEM_RELEASE);
-        CloseHandle(hProc);
-        return false;
-    }
-    LogInject("DLL path written to target process");
-
-    HANDLE hThread = CreateRemoteThread(hProc, NULL, 0, (LPTHREAD_START_ROUTINE)LoadLibraryA, alloc, 0, NULL);
-    if (!hThread) {
-        LogInject("Failed to create remote thread!");
-        VirtualFreeEx(hProc, alloc, 0, MEM_RELEASE);
-        CloseHandle(hProc);
-        return false;
-    }
-    LogInject("Remote thread created, waiting for injection...");
+    if (!hProc) return false;
     
-    WaitForSingleObject(hThread, INFINITE);
-    LogInject("Injection completed!");
+    SIZE_T size = dllData.size();
+    PVOID alloc = nullptr;
+    NTSTATUS status = NtAllocateVirtualMemory(hProc, &alloc, 0, &size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (status != 0) {
+        CloseHandle(hProc);
+        return false;
+    }
     
-    CloseHandle(hThread);
+    SIZE_T written = 0;
+    status = NtWriteVirtualMemory(hProc, alloc, (PVOID)dllData.data(), dllData.size(), &written);
+    if (status != 0) {
+        NtAllocateVirtualMemory(hProc, &alloc, 0, &size, MEM_RELEASE, PAGE_READWRITE);
+        CloseHandle(hProc);
+        return false;
+    }
+    
+    HANDLE hThread = nullptr;
+    status = NtCreateThreadEx(&hThread, THREAD_ALL_ACCESS, nullptr, hProc, (LPTHREAD_START_ROUTINE)alloc, nullptr, 0, 0, 0, 0, nullptr);
+    
     CloseHandle(hProc);
-    return true;
+    return (status == 0);
 }
 
 int main() {
-    system("title NekoExecute Injector");
-    std::cout << "====================================\n";
-    std::cout << "     NekoExecute Roblox Injector     \n";
-    std::cout << "====================================\n\n";
+    system("title NekoInjector");
+    InitSyscalls();
     
-    LogInject("=== Injector Started ===");
-    
-    std::cout << "[1] Inject NekoExecute\n";
-    std::cout << "[2] Exit\n";
-    std::cout << "Choice: ";
+    std::cout << "[NekoInjector] Manual Map Mode\n";
+    std::cout << "[1] Inject\n[2] Exit\n> ";
     
     int choice;
     std::cin >> choice;
+    if (choice != 1) return 0;
     
-    if (choice != 1) {
-        LogInject("User chose to exit");
-        return 0;
-    }
-    
-    std::cout << "\nSearching for Roblox...\n";
-    DWORD pid = GetProcID("RobloxPlayerBeta.exe");
+    DWORD pid = FindProcess("RobloxPlayerBeta.exe");
+    if (!pid) pid = FindProcess("RobloxPlayer.exe");
     if (!pid) {
-        pid = GetProcID("RobloxPlayer.exe");
-    }
-    
-    if (!pid) {
-        std::cout << "Roblox not running. Please start Roblox first.\n";
+        std::cout << "[!] Roblox not running\n";
         system("pause");
-        LogInject("Roblox not found, exiting");
         return 1;
     }
     
-    std::cout << "Roblox found (PID: " << pid << ")\n";
-    std::cout << "Getting DLL path...\n";
+    std::cout << "[+] Found Roblox PID: " << pid << "\n";
     
-    char dllPath[MAX_PATH];
-    GetCurrentDirectoryA(MAX_PATH, dllPath);
-    strcat_s(dllPath, "\\NekoExecute.dll");
-    
-    std::cout << "DLL Path: " << dllPath << "\n";
-    std::cout << "Injecting...\n";
-    
-    if (InjectDLL(pid, dllPath)) {
-        std::cout << "\n[SUCCESS] NekoExecute injected!\n";
-        std::cout << "Check for the NekoExecute window in Roblox.\n";
-        std::cout << "Press INSERT to hide/show the window.\n";
-        LogInject("Injection successful!");
-    } else {
-        std::cout << "\n[FAILED] Injection failed.\n";
-        std::cout << "Check injector_debug.log for details.\n";
-        LogInject("Injection failed!");
+    std::ifstream dllFile("NekoExecute.dll", std::ios::binary | std::ios::ate);
+    if (!dllFile) {
+        std::cout << "[!] DLL not found\n";
+        system("pause");
+        return 1;
     }
     
-    std::cout << "\nPress any key to exit...\n";
+    std::vector<BYTE> buffer(dllFile.tellg());
+    dllFile.seekg(0, std::ios::beg);
+    dllFile.read((char*)buffer.data(), buffer.size());
+    dllFile.close();
+    
+    if (ManualMap(pid, buffer)) {
+        std::cout << "[+] Manual map successful\n";
+    } else {
+        std::cout << "[!] Manual map failed\n";
+    }
+    
     system("pause");
     return 0;
 }
