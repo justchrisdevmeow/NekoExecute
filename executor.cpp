@@ -7,8 +7,6 @@
 #include <vector>
 #include "offsets.h"
 
-#pragma comment(linker, "/SUBSYSTEM:CONSOLE")
-
 HANDLE hPipe = INVALID_HANDLE_VALUE;
 uintptr_t luaState = 0;
 uintptr_t baseAddr = 0;
@@ -78,10 +76,17 @@ void PipeServer() {
 
 DWORD WINAPI MainThread(LPVOID) {
     Log("Executor loaded");
+    
+    // Debug message box to confirm DLL loaded
+    MessageBoxA(NULL, "NekoExecute DLL Loaded", "Debug", MB_OK);
+    
     AllocConsole();
+    AttachConsole(GetCurrentProcessId());
     FILE* f;
     freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
     freopen_s(&f, "CONIN$", "r", stdin);
+    std::cout.clear();
     
     std::cout << "[NekoExecute] Console Mode\nType 'help' for commands\n";
     
