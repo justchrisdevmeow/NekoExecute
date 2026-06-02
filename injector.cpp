@@ -39,25 +39,15 @@ typedef NTSTATUS(NTAPI* pNtWriteVirtualMemory)(
     PSIZE_T NumberOfBytesWritten
 );
 
-typedef NTSTATUS(NTAPI* pNtProtectVirtualMemory)(
-    HANDLE ProcessHandle,
-    PVOID* BaseAddress,
-    PSIZE_T NumberOfBytesToProtect,
-    ULONG NewAccessProtection,
-    PULONG OldAccessProtection
-);
-
 pNtCreateThreadEx NtCreateThreadEx = nullptr;
 pNtAllocateVirtualMemory NtAllocateVirtualMemory = nullptr;
 pNtWriteVirtualMemory NtWriteVirtualMemory = nullptr;
-pNtProtectVirtualMemory NtProtectVirtualMemory = nullptr;
 
 void InitSyscalls() {
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
     NtCreateThreadEx = (pNtCreateThreadEx)GetProcAddress(ntdll, "NtCreateThreadEx");
     NtAllocateVirtualMemory = (pNtAllocateVirtualMemory)GetProcAddress(ntdll, "NtAllocateVirtualMemory");
     NtWriteVirtualMemory = (pNtWriteVirtualMemory)GetProcAddress(ntdll, "NtWriteVirtualMemory");
-    NtProtectVirtualMemory = (pNtProtectVirtualMemory)GetProcAddress(ntdll, "NtProtectVirtualMemory");
 }
 
 void Log(const char* msg) {
@@ -101,6 +91,7 @@ bool ManualMap(DWORD pid, const std::vector<BYTE>& dllData) {
         return false;
     }
     
+    // Call DLL entry point manually
     HANDLE hThread = nullptr;
     status = NtCreateThreadEx(&hThread, THREAD_ALL_ACCESS, nullptr, hProc, (LPTHREAD_START_ROUTINE)alloc, nullptr, 0, 0, 0, 0, nullptr);
     
