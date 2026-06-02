@@ -1,0 +1,38 @@
+name: Build NekoExecute
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup MinGW
+      uses: egor-tensin/setup-mingw@v2
+      with:
+        platform: x64
+    
+    - name: Configure CMake
+      run: |
+        mkdir build
+        cd build
+        cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+    
+    - name: Build
+      run: |
+        cd build
+        mingw32-make -j4
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: NekoExecute
+        path: |
+          build/*.dll
+          build/*.exe
