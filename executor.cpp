@@ -12,7 +12,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 bool showMenu = true;
 char scriptBuffer[65536] = {0};
-HWND robloxWindow = NULL;
+HWND overlayWindow = NULL;
 LPDIRECT3DDEVICE9 device = NULL;
 LPDIRECT3D9 d3d = NULL;
 
@@ -43,61 +43,136 @@ void ExecuteLua(const std::string& script) {
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
         return true;
+    
+    switch (msg) {
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+    }
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
 void Render() {
-    if (!showMenu) return;
-
-    ImGui_ImplDX9_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
-
-    ImGui::Begin("NekoExecute", &showMenu, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::InputTextMultiline("##script", scriptBuffer, IM_ARRAYSIZE(scriptBuffer), ImVec2(780, 500));
+    // Clear the device
+    device->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_ARGB(0, 0, 0, 0), 1.0f, 0);
     
-    if (ImGui::Button("EXECUTE", ImVec2(150, 40))) {
-        ExecuteLua(std::string(scriptBuffer));
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("CLEAR", ImVec2(120, 40))) {
-        memset(scriptBuffer, 0, sizeof(scriptBuffer));
-    }
+    if (showMenu) {
+        ImGui_ImplDX9_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
 
-    ImGui::End();
+        ImGui::Begin("NekoExecute", &showMenu, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
+        ImGui::InputTextMultiline("##script", scriptBuffer, IM_ARRAYSIZE(scriptBuffer), ImVec2(780, 500));
+        
+        if (ImGui::Button("EXECUTE", ImVec2(150, 40))) {
+            ExecuteLua(std::string(scriptBuffer));
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("CLEAR", ImVec2(120, 40))) {
+            memset(scriptBuffer, 0, sizeof(scriptBuffer));
+        }
 
-    ImGui::EndFrame();
-    ImGui::Render();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+        ImGui::End();
+
+        ImGui::EndFrame();
+        ImGui::Render();
+        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    }
+    
+    // Present the frame
+    device->Present(NULL, NULL, NULL, NULL);
+}
+
+// Create an overlay window
+HWND CreateOverlayWindow() {
+    WNDCLASSEX wc = {};
+    wc.cbSize = sizeof(WNDCLASSEX);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.lpszClassName = "NekoExecuteOverlay";
+    RegisterClassEx(&wc);
+
+    HWND hWnd = CreateWindowEx(
+        WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_LAYERED,
+        "NekoExecuteOverlay",
+        "NekoExecute",
+        WS_POPUP,
+        0, 0, 800, 600,
+        NULL, NULL, wc.hInstance, NULL
+    );
+    
+    SetLayeredWindowAttributes(hWnd, 0, 0, LWA_ALPHA);
+    ShowWindow(hWnd, SW_SHOW);
+    UpdateWindow(hWnd);
+    
+    return hWnd;
 }
 
 DWORD WINAPI MainThread(LPVOID) {
-    while (!robloxWindow) {
-        robloxWindow = FindWindowA(NULL, "Roblox");
-        Sleep(200);
-    }
+    // Create our own visible window
+    overlayWindow = CreateOverlayWindow();
+    if (!overlayWindow) return 1;
 
+    // Initialize D3D9
     d3d = Direct3DCreate9(D3D_SDK_VERSION);
+    
     D3DPRESENT_PARAMETERS pp = {};
     pp.Windowed = TRUE;
     pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    pp.hDeviceWindow = robloxWindow;
-    d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, robloxWindow, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &device);
+    pp.hDeviceWindow = overlayWindow;
+    pp.BackBufferFormat = D3DFMT_UNKNOWN;
+    pp.BackBufferCount = 1;
+    pp.BackBufferWidth = 800;
+    pp.BackBufferHeight = 600;
+    pp.EnableAutoDepthStencil = FALSE;
+    
+    if (FAILED(d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, overlayWindow,
+                                  D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &device))) {
+        return 1;
+    }
 
+    // Initialize ImGui
     ImGui::CreateContext();
-    ImGui_ImplWin32_Init(robloxWindow);
+    ImGui_ImplWin32_Init(overlayWindow);
     ImGui_ImplDX9_Init(device);
+    
+    // Style
+    ImGui::StyleColorsDark();
 
-    while (true) {
-        if (GetAsyncKeyState(VK_INSERT) & 1) showMenu = !showMenu;
+    // Message loop
+    MSG msg = {0};
+    while (msg.message != WM_QUIT) {
+        if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        
+        // Toggle menu with INSERT
+        if (GetAsyncKeyState(VK_INSERT) & 1) {
+            showMenu = !showMenu;
+        }
+        
         Render();
         Sleep(10);
     }
+    
+    // Cleanup
+    ImGui_ImplDX9_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    
+    if (device) device->Release();
+    if (d3d) d3d->Release();
+    if (overlayWindow) DestroyWindow(overlayWindow);
+    
     return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hMod);
         CreateThread(NULL, 0, MainThread, NULL, 0, NULL);
     }
     return TRUE;
