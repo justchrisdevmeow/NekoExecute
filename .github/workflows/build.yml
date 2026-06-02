@@ -1,3 +1,4 @@
+# .github/workflows/build.yml
 name: Build NekoExecute
 
 on:
@@ -13,34 +14,21 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Setup MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        update: true
-        install: |
-          mingw-w64-x86_64-gcc
-          mingw-w64-x86_64-cmake
-          mingw-w64-x86_64-make
-          mingw-w64-x86_64-ninja
-    
     - name: Configure CMake
-      shell: msys2 {0}
       run: |
         mkdir build
         cd build
-        cmake .. -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+        cmake .. -G "Visual Studio 17 2022" -A x64
     
     - name: Build
-      shell: msys2 {0}
       run: |
         cd build
-        mingw32-make -j4
+        cmake --build . --config Release
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: NekoExecute
         path: |
-          build/*.dll
-          build/*.exe
+          build/Release/*.dll
+          build/Release/*.exe
