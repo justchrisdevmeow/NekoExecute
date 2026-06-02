@@ -3,6 +3,7 @@
 #include <imgui.h>
 #include <imgui_impl_dx9.h>
 #include <imgui_impl_win32.h>
+#include <string>
 #include "offsets.h"
 
 #pragma comment(lib, "d3d9.lib")
@@ -56,7 +57,7 @@ void Render() {
     ImGui::InputTextMultiline("##script", scriptBuffer, IM_ARRAYSIZE(scriptBuffer), ImVec2(780, 500));
     
     if (ImGui::Button("EXECUTE", ImVec2(150, 40))) {
-        ExecuteLua(scriptBuffer);
+        ExecuteLua(std::string(scriptBuffer));
     }
     ImGui::SameLine();
     if (ImGui::Button("CLEAR", ImVec2(120, 40))) {
